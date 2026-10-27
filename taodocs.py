@@ -1,87 +1,75 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import NoSuchElementException, JavascriptException, StaleElementReferenceException
-
-import base64
+# -*- coding: utf-8 -*-
+"""淘豆网下载。"""
 import time
-import sys
-import os
-from tqdm import trange
-from img2pdf import conpdf
 import urllib.request
-import shutil
+
+from selenium.common.exceptions import (
+    JavascriptException,
+    NoSuchElementException,
+    StaleElementReferenceException,
+)
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+from tqdm import trange
+
+from driver_setup import create_driver
+from img2pdf import conpdf
+from utils import prepare_workdir, save_pdf_path
 
 
 def download(url):
-    option = webdriver.ChromeOptions()
-    # option.add_argument('headless')
-    option.add_argument('log-level=3')
-    driver = webdriver.Chrome(
-        executable_path='.//chromedriver', chrome_options=option)
-
+    driver = create_driver(headless=False)
     title = "output"
+    workdir = None
     try:
-        driver.set_page_load_timeout(15)
-        driver.get(url)
-        title = driver.title[:-8]
-    except:
-        print("Timeout - start download anyway.")
-
-    print(f'淘豆网: 《{title}》')
-    time.sleep(5)
-
-    while True:
         try:
-            driver.execute_script("window.scrollBy(0,10000)")
-            time.sleep(1)
-            # 展开全部
-            elem_cont_button = driver.find_element_by_class_name(
-                "banner-more-btn")
-            elem_cont_button = elem_cont_button.find_element_by_tag_name(
-                'span')
-            driver.execute_script(
-                "arguments[0].scrollIntoView(true);", elem_cont_button)
-            actions = ActionChains(driver)
-            actions.move_to_element(elem_cont_button).perform()
+            driver.get(url)
+            title = (driver.title or "output")[:-8] or "output"
+        except Exception:
+            print("Timeout - start download anyway.")
+
+        print(f"淘豆网: 《{title}》")
+        time.sleep(5)
+
+        while True:
+            try:
+                driver.execute_script("window.scrollBy(0,10000)")
+                time.sleep(1)
+                # 展开全部
+                elem_cont_button = driver.find_element(By.CLASS_NAME, "banner-more-btn")
+                elem_cont_button = elem_cont_button.find_element(By.TAG_NAME, "span")
+                driver.execute_script("arguments[0].scrollIntoView(true);", elem_cont_button)
+                ActionChains(driver).move_to_element(elem_cont_button).perform()
+                time.sleep(0.5)
+                driver.execute_script("arguments[0].click();", elem_cont_button)
+            except (NoSuchElementException, StaleElementReferenceException):
+                break
+            except JavascriptException:
+                continue
+
+        # 获取页数
+        num_of_pages = int(driver.find_element(By.ID, "docPage").get_attribute("innerHTML"))
+
+        workdir = prepare_workdir(title)
+
+        for pages in trange(num_of_pages):
             time.sleep(0.5)
-            driver.execute_script("arguments[0].click();", elem_cont_button)
-            # break
-        except NoSuchElementException:
-            break
-        except StaleElementReferenceException:
-            break
-        except JavascriptException:
-            continue
-    # 获取页数
-    num_of_pages = driver.find_element_by_id(
-        'docPage').get_attribute('innerHTML')
-    num_of_pages = int(num_of_pages)
+            element = driver.find_element(By.ID, f"page{pages + 1}")
+            driver.execute_script("arguments[0].scrollIntoView(true);", element)
+            ActionChains(driver).move_to_element(element).perform()
+            time.sleep(0.5)
+            img_url = element.find_element(By.TAG_NAME, "img").get_attribute("src")
+            with urllib.request.urlopen(img_url, timeout=30) as response:
+                (workdir / f"{pages}.jpg").write_bytes(response.read())
+    finally:
+        driver.quit()
 
-    if os.path.exists(f'./temp/{title}'):
-        shutil.rmtree(f'./temp/{title}')
-    os.makedirs(f'./temp/{title}')
-
-    for pages in trange(num_of_pages):
-        time.sleep(0.5)
-        element = driver.find_element_by_id(f"page{pages + 1}")
-        driver.execute_script("arguments[0].scrollIntoView(true);", element)
-        actions = ActionChains(driver)
-        actions.move_to_element(element).perform()
-        time.sleep(0.5)
-        imgElement = element.find_element_by_tag_name('img')
-        imgUrl = imgElement.get_attribute('src')
-        response = urllib.request.urlopen(imgUrl)
-        html = response.read()
-        with open(f'./temp/{title}/{pages}.jpg', 'wb') as f:
-            f.write(html)
-
-    driver.quit()
-    print('下载完毕，正在转码')
-    conpdf(f'output/{title}.pdf', f'temp/{title}', '.jpg')
+    if workdir is None:
+        print("未取到页数，放弃")
+        return
+    print("下载完毕，正在转码")
+    conpdf(str(save_pdf_path(title)), str(workdir), ".jpg")
 
 
 if __name__ == "__main__":
-    download('https://www.taodocs.com/p-292564682.html')
+    download("https://www.taodocs.com/p-292564682.html")

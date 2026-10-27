@@ -1,10 +1,16 @@
 temp/
+output/
 dist/
 build/
 .vscode/
+.venv/
+venv/
 __pycache__/
 *.pyc
 *.log
 book118/out/
 *.pdf
 *.spec
+
+# 旧版内置驱动已废弃：现在按本机 Chrome 版本自动下载
+chromedriver.exe

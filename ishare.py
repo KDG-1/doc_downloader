@@ -1,113 +1,126 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import NoSuchElementException, JavascriptException
-
-import base64
-import time
-import sys
-import os
-from tqdm import trange
-from img2pdf import conpdf
-import requests
-import os
-from PIL import Image
+# -*- coding: utf-8 -*-
+"""新浪爱问下载：图片直接保存，SVG 需要额外工具转 PNG。"""
 import shutil
+import subprocess
+import time
+
+from PIL import Image
+from selenium.common.exceptions import JavascriptException, NoSuchElementException
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+from tqdm import trange
+
+from driver_setup import create_driver
+from img2pdf import conpdf
+from utils import http_get, prepare_workdir, save_pdf_path
+
+SVG_HINT = (
+    "该页是 SVG 格式，需要 svg2png 或 cairosvg 才能转换：\n"
+    "  npm install -g svg2png      （Windows 需先装 nodejs）\n"
+    "  pip install cairosvg        （备选方案）"
+)
+
+
+def _svg_to_png(svg_path, png_path, width=1500):
+    """优先调用 svg2png，退回 cairosvg。"""
+    if shutil.which("svg2png"):
+        subprocess.run(
+            ["svg2png", str(svg_path), "-o", str(png_path), "-w", str(width)],
+            check=True,
+            timeout=120,
+        )
+        return
+    try:
+        import cairosvg
+    except ImportError as exc:
+        raise RuntimeError(SVG_HINT) from exc
+    cairosvg.svg2png(url=str(svg_path), write_to=str(png_path), output_width=width)
 
 
 def download(url):
-    option = webdriver.ChromeOptions()
-    option.add_argument('headless')
-    option.add_argument('log-level=3')
-    driver = webdriver.Chrome(
-        executable_path='.//chromedriver', chrome_options=option)
-
+    driver = create_driver(headless=True)
     title = "output"
+    workdir = None
     try:
-        driver.set_page_load_timeout(15)
-        driver.get(url)
-        title = driver.title
-    except:
-        print("Timeout - start download anyway.")
-
-    print(f'新浪爱问: 《{title}》')
-    time.sleep(5)
-
-    lastPageNum = None
-    while True:
         try:
-            driver.execute_script("window.scrollBy(0,10000)")
-            time.sleep(1)
-            # 展开全部
-            elem_cont_button = driver.find_element_by_class_name(
-                "state-bottom")
-            elem_cont_button = elem_cont_button.find_element_by_tag_name('a')
-            text = elem_cont_button.find_element_by_tag_name(
-                'p').get_attribute('innerHTML')
-            if text == lastPageNum:
-                print('收费文档！无法下载')
-                driver.quit()
-                return
-            lastPageNum = text
-            if '结束' in text or '>0</em>' in text:
-                break
-            driver.execute_script(
-                "arguments[0].scrollIntoView(true);", elem_cont_button)
-            actions = ActionChains(driver)
-            actions.move_to_element(elem_cont_button).perform()
-            time.sleep(0.5)
-            driver.execute_script("arguments[0].click();", elem_cont_button)
-        except JavascriptException:
-            continue
-    # 获取页数
-    num_of_pages = driver.find_element_by_class_name(
-        'page-input-con').find_element_by_tag_name('span').get_attribute('innerHTML')
-    num_of_pages = int(num_of_pages)
-    driver.execute_script("window.scrollBy(0,10000)")
+            driver.get(url)
+            title = driver.title or "output"
+        except Exception:
+            print("Timeout - start download anyway.")
 
-    if os.path.exists(f'./temp/{title}'):
-        shutil.rmtree(f'./temp/{title}')
-    os.makedirs(f'./temp/{title}')
+        print(f"新浪爱问: 《{title}》")
+        time.sleep(5)
 
-    imgs = driver.find_elements_by_class_name('data-detail')
-    for pages in trange(num_of_pages):
-        try:
-            # svg格式
-            imgUrl = imgs[pages].find_element_by_tag_name(
-                'embed').get_attribute('src')
-            html = requests.get(imgUrl).content
-            with open(f'./temp/{title}/{title}.svg', 'wb') as svgFile:
-                svgFile.write(html)
-                svgFile.flush()
-                os.system(
-                    f'svg2png "./temp/{title}/{title}.svg" -o "./temp/{title}/{title}.png" -w 1500')
-                im = Image.open(f'./temp/{title}/{title}.png')
-                bg = Image.new('RGB', im.size, (255, 255, 255))
-                bg.paste(im, im)
-                bg.save(f'./temp/{title}/{pages}.jpg')
-                os.remove(f'./temp/{title}/{title}.png')
-            os.remove(f'./temp/{title}/{title}.svg')
-        except NoSuchElementException:
-            # 图片格式
-            while True:
-                try:
-                    imgUrl = imgs[pages].find_element_by_tag_name(
-                        'img').get_attribute('src')
-                    html = requests.get(imgUrl).content
-                    with open(f'./temp/{title}/{pages}.jpg', 'wb') as f:
-                        f.write(html)
+        last_page_num = None
+        while True:
+            try:
+                driver.execute_script("window.scrollBy(0,10000)")
+                time.sleep(1)
+                # 展开全部
+                elem_cont_button = driver.find_element(By.CLASS_NAME, "state-bottom")
+                elem_cont_button = elem_cont_button.find_element(By.TAG_NAME, "a")
+                text = elem_cont_button.find_element(By.TAG_NAME, "p").get_attribute("innerHTML")
+                if text == last_page_num:
+                    print("收费文档！无法下载")
+                    return
+                last_page_num = text
+                if "结束" in text or ">0</em>" in text:
                     break
-                except Exception as e:
-                    actions = ActionChains(driver)
-                    actions.move_to_element(imgs[pages]).perform()
-                    time.sleep(1)
-                    driver.execute_script("window.scrollBy(0,10000)")
+                driver.execute_script("arguments[0].scrollIntoView(true);", elem_cont_button)
+                ActionChains(driver).move_to_element(elem_cont_button).perform()
+                time.sleep(0.5)
+                driver.execute_script("arguments[0].click();", elem_cont_button)
+            except JavascriptException:
+                continue
 
-    driver.quit()
-    print('下载完毕，正在转码')
-    conpdf(f'output/{title}.pdf', f'temp/{title}', '.jpg', True)
+        # 获取页数
+        num_of_pages = int(
+            driver.find_element(By.CLASS_NAME, "page-input-con")
+            .find_element(By.TAG_NAME, "span")
+            .get_attribute("innerHTML")
+        )
+        driver.execute_script("window.scrollBy(0,10000)")
+
+        workdir = prepare_workdir(title)
+        imgs = driver.find_elements(By.CLASS_NAME, "data-detail")
+
+        for pages in trange(num_of_pages):
+            try:
+                # svg 格式
+                img_url = imgs[pages].find_element(By.TAG_NAME, "embed").get_attribute("src")
+                svg_file = workdir / f"{pages}.svg"
+                svg_file.write_bytes(http_get(img_url, referer=url).content)
+                png_file = workdir / f"{pages}.png"
+                _svg_to_png(svg_file, png_file)
+                im = Image.open(png_file)
+                bg = Image.new("RGB", im.size, (255, 255, 255))
+                bg.paste(im, im)
+                bg.save(workdir / f"{pages}.jpg")
+                png_file.unlink(missing_ok=True)
+                svg_file.unlink(missing_ok=True)
+            except NoSuchElementException:
+                # 图片格式
+                for _ in range(10):
+                    try:
+                        img_url = imgs[pages].find_element(By.TAG_NAME, "img").get_attribute("src")
+                        (workdir / f"{pages}.jpg").write_bytes(
+                            http_get(img_url, referer=url).content
+                        )
+                        break
+                    except Exception:
+                        ActionChains(driver).move_to_element(imgs[pages]).perform()
+                        time.sleep(1)
+                        driver.execute_script("window.scrollBy(0,10000)")
+                else:
+                    print(f"第 {pages + 1} 页取图失败，跳过")
+    finally:
+        driver.quit()
+
+    if workdir is None:
+        print("未取到页数，放弃")
+        return
+    print("下载完毕，正在转码")
+    conpdf(str(save_pdf_path(title)), str(workdir), ".jpg", True)
 
 
 if __name__ == "__main__":
